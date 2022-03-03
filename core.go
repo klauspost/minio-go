@@ -55,6 +55,12 @@ func (c Core) ListObjectsV2(bucketName, objectPrefix, startAfter, continuationTo
 	return c.listObjectsV2Query(context.Background(), bucketName, objectPrefix, continuationToken, true, false, delimiter, startAfter, maxkeys, nil)
 }
 
+// ListObjectsV2Context - Lists all the objects at a prefix, similar to ListObjects() but uses
+// continuationToken instead of marker to support iteration over the results.
+func (c Core) ListObjectsV2Context(ctx context.Context, bucketName string, continuationToken, delimiter string, opts ListObjectsOptions) (ListBucketV2Result, error) {
+	return c.listObjectsV2Query(ctx, bucketName, opts.Prefix, continuationToken, !opts.SkipOwner, opts.WithMetadata, delimiter, opts.StartAfter, opts.MaxKeys, opts.headers)
+}
+
 // CopyObject - copies an object from source object to destination object on server side.
 func (c Core) CopyObject(ctx context.Context, sourceBucket, sourceObject, destBucket, destObject string, metadata map[string]string, srcOpts CopySrcOptions, dstOpts PutObjectOptions) (ObjectInfo, error) {
 	return c.copyObjectDo(ctx, sourceBucket, sourceObject, destBucket, destObject, metadata, srcOpts, dstOpts)

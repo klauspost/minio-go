@@ -67,9 +67,6 @@ func (c *Client) listObjectsV2(ctx context.Context, bucketName string, opts List
 		delimiter = ""
 	}
 
-	// Return object owner information by default
-	fetchOwner := true
-
 	// Validate bucket name.
 	if err := s3utils.CheckValidBucketName(bucketName); err != nil {
 		defer close(objectStatCh)
@@ -96,7 +93,7 @@ func (c *Client) listObjectsV2(ctx context.Context, bucketName string, opts List
 		for {
 			// Get list of objects a maximum of 1000 per request.
 			result, err := c.listObjectsV2Query(ctx, bucketName, opts.Prefix, continuationToken,
-				fetchOwner, opts.WithMetadata, delimiter, opts.StartAfter, opts.MaxKeys, opts.headers)
+				!opts.SkipOwner, opts.WithMetadata, delimiter, opts.StartAfter, opts.MaxKeys, opts.headers)
 			if err != nil {
 				objectStatCh <- ObjectInfo{
 					Err: err,
@@ -625,6 +622,8 @@ type ListObjectsOptions struct {
 	WithVersions bool
 	// Include objects metadata in the listing
 	WithMetadata bool
+	// Skip fetching owner information - only when using v2.
+	SkipOwner bool
 	// Only list objects with the prefix
 	Prefix string
 	// Ignore '/' delimiter
