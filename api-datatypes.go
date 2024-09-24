@@ -170,6 +170,10 @@ type ObjectInfo struct {
 	ContentType  string    `json:"contentType"`  // A standard MIME type describing the format of the object data.
 	Expires      time.Time `json:"expires"`      // The date and time at which the object is no longer able to be cached.
 
+	// ChecksumAlgorithm is the algorithm used to create a checksum of the object.
+	// Valid Values: CRC32 | CRC32C | SHA1 | SHA256
+	ChecksumAlgorithm string `json:"checksumAlgorithm,omitempty"`
+
 	// Collection of additional metadata on the object.
 	// eg: x-amz-meta-*, content-encoding etc.
 	Metadata http.Header `json:"metadata" xml:"-"`
@@ -214,11 +218,15 @@ type ObjectInfo struct {
 
 	Restore *RestoreInfo
 
+	// Checksums are object checksums if set when uploaded.
+	// Only returned by MinIO servers on listing, with metadata=true.
+	Checksums map[string]string `json:"-"`
+
 	// Checksum values
-	ChecksumCRC32  string
-	ChecksumCRC32C string
-	ChecksumSHA1   string
-	ChecksumSHA256 string
+	ChecksumCRC32  string `json:",omitempty"`
+	ChecksumCRC32C string `json:",omitempty"`
+	ChecksumSHA1   string `json:",omitempty"`
+	ChecksumSHA256 string `json:",omitempty"`
 
 	Internal *struct {
 		K int // Data blocks
@@ -227,6 +235,37 @@ type ObjectInfo struct {
 
 	// Error
 	Err error `json:"-"`
+}
+
+func (o *ObjectInfo) setChecksumFromHeader(h http.Header) {
+	// Checksum values
+	o.ChecksumCRC32 = h.Get("x-amz-checksum-crc32")
+	o.ChecksumCRC32C = h.Get("x-amz-checksum-crc32c")
+	o.ChecksumSHA1 = h.Get("x-amz-checksum-sha1")
+	o.ChecksumSHA256 = h.Get("x-amz-checksum-sha256")
+	setIf := func(k string, v string) {
+		if v != "" {
+			if o.Checksums == nil {
+				o.Checksums = map[string]string{k: v}
+				return
+			}
+			o.Checksums[k] = v
+		}
+	}
+	setIf("CRC32", o.ChecksumCRC32)
+	setIf("CRC32C", o.ChecksumCRC32C)
+	setIf("SHA1", o.ChecksumSHA1)
+	setIf("SHA256", o.ChecksumSHA256)
+}
+
+func (o *ObjectInfo) xferCheckSums() {
+	if len(o.Checksums) == 0 {
+		return
+	}
+	o.ChecksumCRC32 = o.Checksums["CRC32"]
+	o.ChecksumCRC32C = o.Checksums["CRC32C"]
+	o.ChecksumSHA1 = o.Checksums["SHA1"]
+	o.ChecksumSHA256 = o.Checksums["SHA256"]
 }
 
 // ObjectMultipartInfo container for multipart object metadata.

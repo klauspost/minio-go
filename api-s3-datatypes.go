@@ -85,6 +85,10 @@ type Version struct {
 	StorageClass string
 	VersionID    string `xml:"VersionId"`
 
+	// ChecksumAlgorithm is the algorithm used to create a checksum of the object.
+	// Valid Values: CRC32 | CRC32C | SHA1 | SHA256
+	ChecksumAlgorithm string `json:"checksumAlgorithm,omitempty"`
+
 	// x-amz-meta-* headers stripped "x-amz-meta-" prefix containing the first value.
 	// Only returned by MinIO servers.
 	UserMetadata StringMap `json:"userMetadata,omitempty"`
@@ -92,6 +96,10 @@ type Version struct {
 	// x-amz-tagging values in their k/v values.
 	// Only returned by MinIO servers.
 	UserTags URLMap `json:"userTags,omitempty" xml:"UserTags"`
+
+	// Checksums are object checksums if set when uploaded.
+	// Only returned by MinIO servers.
+	Checksums map[string]string `json:",omitempty"`
 
 	Internal *struct {
 		K int // Data blocks

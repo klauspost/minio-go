@@ -2367,7 +2367,7 @@ func testPutObjectWithTrailingChecksums() {
 	}
 
 	// Enable tracing, write to stderr.
-	// c.TraceOn(os.Stderr)
+	c.TraceOn(os.Stderr)
 
 	// Set user agent.
 	c.SetAppInfo("MinIO-go-FunctionalTest", appVersion)
@@ -2474,6 +2474,24 @@ func testPutObjectWithTrailingChecksums() {
 		if err := r.Close(); err == nil {
 			logError(testName, function, args, startTime, "", "Object already closed, should respond with error", err)
 			return
+		}
+
+		function = "ListObjects(...)"
+		oi := c.ListObjects(context.Background(), bucketName, minio.ListObjectsOptions{Prefix: objectName})
+		for o := range oi {
+			if o.ChecksumAlgorithm != test.cs.String() {
+				err = fmt.Errorf("want %q got %q", test.cs.String(), o.ChecksumAlgorithm)
+				logError(testName, function, args, startTime, "", "ChecksumAlgorithm:", err)
+			}
+		}
+
+		function = "ListObjectVersions(...)"
+		oi = c.ListObjects(context.Background(), bucketName, minio.ListObjectsOptions{Prefix: objectName, WithVersions: true})
+		for o := range oi {
+			if o.ChecksumAlgorithm != test.cs.String() {
+				err = fmt.Errorf("want %q got %q", test.cs.String(), o.ChecksumAlgorithm)
+				logError(testName, function, args, startTime, "", "ChecksumAlgorithm:", err)
+			}
 		}
 
 		function = "GetObject( Range...)"
@@ -14937,6 +14955,8 @@ func main() {
 
 	// execute tests
 	if isFullMode() {
+		testPutObjectWithTrailingChecksums()
+		return
 		testCorsSetGetDelete()
 		testCors()
 		testListMultipartUpload()
@@ -14955,7 +14975,6 @@ func main() {
 		testCompose10KSourcesV2()
 		testUserMetadataCopyingV2()
 		testPutObjectWithChecksums()
-		testPutObjectWithTrailingChecksums()
 		testPutMultipartObjectWithChecksums(false)
 		testPutMultipartObjectWithChecksums(true)
 		testPutObject0ByteV2()

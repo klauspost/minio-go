@@ -18,8 +18,10 @@
 package minio
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -122,6 +124,7 @@ func (c *Client) listObjectsV2(ctx context.Context, bucketName string, opts List
 			// If contents are available loop through and send over channel.
 			for _, object := range result.Contents {
 				object.ETag = trimEtag(object.ETag)
+				object.xferCheckSums()
 				select {
 				// Send object content.
 				case objectStatCh <- object:
@@ -244,7 +247,9 @@ func (c *Client) listObjectsV2Query(ctx context.Context, bucketName, objectPrefi
 
 	// Decode listBuckets XML.
 	listBucketResult := ListBucketV2Result{}
-	if err = xmlDecoder(resp.Body, &listBucketResult); err != nil {
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(b))
+	if err = xmlDecoder(bytes.NewReader(b), &listBucketResult); err != nil {
 		return listBucketResult, err
 	}
 
@@ -337,6 +342,7 @@ func (c *Client) listObjects(ctx context.Context, bucketName string, opts ListOb
 				// Save the marker.
 				marker = object.Key
 				object.ETag = trimEtag(object.ETag)
+				object.xferCheckSums()
 				select {
 				// Send object content.
 				case objectStatCh <- object:
@@ -448,7 +454,10 @@ func (c *Client) listObjectVersions(ctx context.Context, bucketName string, opts
 					UserTags:       version.UserTags,
 					UserMetadata:   version.UserMetadata,
 					Internal:       version.Internal,
+					Checksums:      version.Checksums,
 				}
+				info.xferCheckSums()
+
 				select {
 				// Send object version info.
 				case resultCh <- info:

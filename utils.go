@@ -356,7 +356,7 @@ func ToObjectInfo(bucketName, objectName string, h http.Header) (ObjectInfo, err
 	deleteMarker := h.Get(amzDeleteMarker) == "true"
 
 	// Save object metadata info.
-	return ObjectInfo{
+	o := ObjectInfo{
 		ETag:              etag,
 		Key:               objectName,
 		Size:              size,
@@ -376,13 +376,9 @@ func ToObjectInfo(bucketName, objectName string, h http.Header) (ObjectInfo, err
 		UserTags:     userTags,
 		UserTagCount: tagCount,
 		Restore:      restore,
-
-		// Checksum values
-		ChecksumCRC32:  h.Get("x-amz-checksum-crc32"),
-		ChecksumCRC32C: h.Get("x-amz-checksum-crc32c"),
-		ChecksumSHA1:   h.Get("x-amz-checksum-sha1"),
-		ChecksumSHA256: h.Get("x-amz-checksum-sha256"),
-	}, nil
+	}
+	o.setChecksumFromHeader(h)
+	return o, nil
 }
 
 var readFull = func(r io.Reader, buf []byte) (n int, err error) {
