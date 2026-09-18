@@ -77,6 +77,11 @@ const (
 	// TODO: remove when server supports the 2026 checksum types on latest release.
 	// Linux is fetched from edge, so supports new types.
 	ignore2026Checksums = runtime.GOOS != "linux"
+
+	// TODO: remove when the latest release verifies the checksum a snowball
+	// entry carries. Before that it stores the digest without checking it.
+	// Linux is fetched from edge, so it verifies.
+	ignoreUnverifiedSnowballChecksums = runtime.GOOS != "linux"
 )
 
 func ignore2026ChecksumError(cs minio.ChecksumType, err error) bool {
@@ -2310,6 +2315,117 @@ func testPutObjectWithAutoChecksums() {
 	}
 	if st.Size != int64(bufSize) {
 		logError(testName, function, args, startTime, "", "Number of bytes returned by PutObject does not match GetObject, expected "+string(bufSize)+" got "+string(st.Size), err)
+		return
+	}
+
+	logSuccess(testName, function, args, startTime)
+}
+
+// Test PutObjectsSnowball with a full-object checksum on each entry.
+func testPutObjectsSnowballWithChecksums() {
+	// initialize logging params
+	startTime := time.Now()
+	testName := getFuncName()
+	function := "PutObjectsSnowball(bucketName, opts, objs)"
+	args := map[string]interface{}{
+		"bucketName": "",
+		"objectName": "",
+		"opts":       "minio.SnowballOptions{InMemory: true}",
+	}
+
+	if !isFullMode() {
+		logIgnored(testName, function, args, startTime, "Skipping functional tests for short/quick runs")
+		return
+	}
+
+	c, err := NewClient(ClientConfig{})
+	if err != nil {
+		logError(testName, function, args, startTime, "", "MinIO client object creation failed", err)
+		return
+	}
+
+	// Generate a new random bucket name.
+	bucketName := randString(60, rand.NewSource(time.Now().UnixNano()), "minio-go-test-")
+	args["bucketName"] = bucketName
+
+	// Make a new bucket.
+	err = c.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{Region: "us-east-1"})
+	if err != nil {
+		logError(testName, function, args, startTime, "", "Make bucket failed", err)
+		return
+	}
+
+	defer cleanupBucket(bucketName, c)
+
+	body := []byte("snowball entries carry their own checksum")
+	send := func(obj minio.SnowballObject) error {
+		obj.Size = int64(len(body))
+		obj.Content = bytes.NewReader(body)
+		objs := make(chan minio.SnowballObject, 1)
+		objs <- obj
+		close(objs)
+		return c.PutObjectsSnowball(context.Background(), bucketName, minio.SnowballOptions{InMemory: true}, objs)
+	}
+
+	// A digest of other content must be refused as the entry is extracted.
+	// The check is algorithm independent, so one probe covers all of them.
+	args["objectName"] = "snowball-mismatch"
+	args["checksum"] = minio.ChecksumCRC32C.String()
+	err = send(minio.SnowballObject{
+		Key:          "snowball-mismatch",
+		ChecksumType: minio.ChecksumCRC32C,
+		Checksum:     minio.ChecksumCRC32C.EncodeToString([]byte("other content")),
+	})
+	if err == nil {
+		if !ignoreUnverifiedSnowballChecksums {
+			logError(testName, function, args, startTime, "", "PutObjectsSnowball did not fail on a wrong checksum", nil)
+			return
+		}
+		logIgnored(testName, function, args, startTime, "server does not verify snowball entry checksums")
+	}
+
+	for _, cs := range []minio.ChecksumType{
+		minio.ChecksumMD5, minio.ChecksumSHA512, minio.ChecksumXXHash64, minio.ChecksumXXHash3,
+		minio.ChecksumXXHash128, minio.ChecksumCRC32C, minio.ChecksumCRC32, minio.ChecksumSHA1,
+		minio.ChecksumSHA256, minio.ChecksumCRC64NVME,
+	} {
+		objectName := "snowball-" + strings.ToLower(cs.String())
+		args["objectName"] = objectName
+		args["checksum"] = cs.String()
+
+		err = send(minio.SnowballObject{Key: objectName, ChecksumType: cs, Checksum: cs.EncodeToString(body)})
+		if err != nil {
+			if ignore2026ChecksumError(cs, err) {
+				logIgnored(testName, function, args, startTime, "server does not support "+cs.String())
+				continue
+			}
+			logError(testName, function, args, startTime, "", "PutObjectsSnowball failed", err)
+			return
+		}
+
+		st, err := c.StatObject(context.Background(), bucketName, objectName, minio.StatObjectOptions{Checksum: true})
+		if err != nil {
+			logError(testName, function, args, startTime, "", "StatObject failed", err)
+			return
+		}
+		if got, want := st.Checksum(cs), cs.EncodeToString(body); got != want {
+			logError(testName, function, args, startTime, "", "checksum mismatch", fmt.Errorf("want %s, got %s", want, got))
+			return
+		}
+		if st.ChecksumMode != minio.ChecksumFullObjectMode.String() {
+			logError(testName, function, args, startTime, "", "Checksum mode is not full object", fmt.Errorf("got %s, want %s", st.ChecksumMode, minio.ChecksumFullObjectMode.String()))
+			return
+		}
+	}
+
+	// ChecksumType and Checksum must be given together.
+	args["objectName"] = "snowball-incomplete"
+	if err = send(minio.SnowballObject{Key: "snowball-incomplete", ChecksumType: minio.ChecksumCRC32C}); err == nil {
+		logError(testName, function, args, startTime, "", "PutObjectsSnowball accepted a ChecksumType with no Checksum", nil)
+		return
+	}
+	if err = send(minio.SnowballObject{Key: "snowball-incomplete", Checksum: minio.ChecksumCRC32C.EncodeToString(body)}); err == nil {
+		logError(testName, function, args, startTime, "", "PutObjectsSnowball accepted a Checksum with no ChecksumType", nil)
 		return
 	}
 
@@ -15804,6 +15920,7 @@ func main() {
 	// execute tests
 	if isFullMode() {
 		testPutObjectWithChecksums()
+		testPutObjectsSnowballWithChecksums()
 		testPutObjectWithTrailingChecksums()
 		testPutMultipartObjectWithChecksums()
 		testCopyObjectWithChecksums()

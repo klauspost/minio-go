@@ -18,11 +18,14 @@
 package minio
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -353,5 +356,126 @@ func TestMakeTargetURL(t *testing.T) {
 					i+1, testCase.expectedURL.String(), u.String())
 			}
 		}
+	}
+}
+
+// TestPutObjectsSnowballChecksum covers the full-object checksum a snowball
+// entry can carry: the header record written into the archive, and the
+// validation of the ChecksumType/Checksum pair.
+func TestPutObjectsSnowballChecksum(t *testing.T) {
+	var uploaded []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploaded, _ = io.ReadAll(r.Body)
+		w.Header().Set("ETag", `"3858f62230ac3c915f300c664312c11f"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(u.Host, &Options{
+		Creds:  credentials.NewStaticV4("ak", "sk", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("snowball entry content")
+	send := func(objs ...SnowballObject) error {
+		ch := make(chan SnowballObject, len(objs))
+		for _, o := range objs {
+			o.Size = int64(len(body))
+			o.Content = bytes.NewReader(body)
+			ch <- o
+		}
+		close(ch)
+		// DisableContentSha256 keeps the archive off the aws-chunked wire
+		// framing, so the captured body is the tar itself.
+		return client.PutObjectsSnowball(context.Background(), "bucket", SnowballOptions{
+			InMemory: true,
+			Opts:     PutObjectOptions{DisableContentSha256: true},
+		}, ch)
+	}
+
+	types := []ChecksumType{
+		ChecksumCRC32, ChecksumCRC32C, ChecksumSHA1, ChecksumSHA256, ChecksumCRC64NVME,
+		ChecksumMD5, ChecksumSHA512, ChecksumXXHash64, ChecksumXXHash3, ChecksumXXHash128,
+	}
+	entries := make([]SnowballObject, 0, len(types)+1)
+	for _, ct := range types {
+		entries = append(entries, SnowballObject{
+			Key:          "with-" + ct.String(),
+			ChecksumType: ct,
+			Checksum:     ct.EncodeToString(body),
+		})
+	}
+	entries = append(entries,
+		SnowballObject{Key: "without"},
+		SnowballObject{
+			Key:          "overrides-headers",
+			ChecksumType: ChecksumCRC32C,
+			Checksum:     ChecksumCRC32C.EncodeToString(body),
+			Headers:      http.Header{ChecksumCRC32C.KeyCapitalized(): []string{"AAAAAA=="}},
+		})
+	if err := send(entries...); err != nil {
+		t.Fatal(err)
+	}
+
+	records := map[string]map[string]string{}
+	tr := tar.NewReader(bytes.NewReader(uploaded))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		records[hdr.Name] = hdr.PAXRecords
+	}
+	if len(records) != len(entries) {
+		t.Fatalf("archive holds %d entries, want %d", len(records), len(entries))
+	}
+	for _, ct := range types {
+		record := "minio.metadata." + ct.KeyCapitalized()
+		if got, want := records["with-"+ct.String()][record], ct.EncodeToString(body); got != want {
+			t.Errorf("%s: %s = %q, want %q", ct, record, got, want)
+		}
+	}
+	for k := range records["without"] {
+		if strings.HasPrefix(k, "minio.metadata.X-Amz-Checksum-") {
+			t.Errorf("an entry with no checksum carries %q", k)
+		}
+	}
+	record := "minio.metadata." + ChecksumCRC32C.KeyCapitalized()
+	if got, want := records["overrides-headers"][record], ChecksumCRC32C.EncodeToString(body); got != want {
+		t.Errorf("Checksum did not override Headers: %s = %q, want %q", record, got, want)
+	}
+
+	var closed int
+	for _, tc := range []struct {
+		name string
+		obj  SnowballObject
+	}{
+		{"type without value", SnowballObject{Key: "a", ChecksumType: ChecksumCRC32C}},
+		{"value without type", SnowballObject{Key: "b", Checksum: ChecksumCRC32C.EncodeToString(body)}},
+		{"unknown type", SnowballObject{Key: "c", ChecksumType: ChecksumType(1 << 20), Checksum: ChecksumCRC32C.EncodeToString(body)}},
+		{"value is not base64", SnowballObject{Key: "d", ChecksumType: ChecksumCRC32C, Checksum: "not base64!"}},
+		{"value has the wrong length", SnowballObject{Key: "e", ChecksumType: ChecksumSHA256, Checksum: ChecksumCRC32C.EncodeToString(body)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := tc.obj
+			obj.Close = func() { closed++ }
+			if err := send(obj); err == nil {
+				t.Fatal("expected a validation error")
+			}
+		})
+	}
+	if closed != 5 {
+		t.Errorf("rejected entries were closed %d times, want 5", closed)
 	}
 }

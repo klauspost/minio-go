@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,6 +74,16 @@ type SnowballObject struct {
 
 	// VersionID of the object; if empty, a new versionID will be generated
 	VersionID string
+
+	// ChecksumType is the algorithm of Checksum below.
+	// It must be set if, and only if, Checksum is set.
+	ChecksumType ChecksumType
+
+	// Checksum is the base64 encoded full-object checksum of Content, sent
+	// as the entry's x-amz-checksum-<algorithm> header. A MinIO AIStor
+	// server verifies it against the content it extracts and stores it with
+	// the object. It takes precedence over any checksum in Headers.
+	Checksum string
 
 	// Headers contains more options for this object upload, the same as you
 	// would include in a regular PutObject operation, such as user metadata
@@ -194,8 +205,20 @@ objectLoop:
 			if obj.VersionID != "" {
 				header.PAXRecords["minio.versionId"] = obj.VersionID
 			}
+			if obj.ChecksumType.IsSet() != (obj.Checksum != "") {
+				closeObj()
+				return errInvalidArgument("snowball object " + obj.Key + ": ChecksumType and Checksum must either both be set or both be empty")
+			}
 			for k, vals := range obj.Headers {
 				header.PAXRecords["minio.metadata."+k] = strings.Join(vals, ",")
+			}
+			if obj.Checksum != "" {
+				raw, err := base64.StdEncoding.DecodeString(obj.Checksum)
+				if err != nil || len(raw) != obj.ChecksumType.RawByteLen() {
+					closeObj()
+					return errInvalidArgument("snowball object " + obj.Key + ": Checksum is not a base64 encoded " + obj.ChecksumType.String() + " value")
+				}
+				header.PAXRecords["minio.metadata."+obj.ChecksumType.KeyCapitalized()] = obj.Checksum
 			}
 
 			if err := t.WriteHeader(&header); err != nil {
